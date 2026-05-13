@@ -3,6 +3,21 @@
   "version": "0.1.0",
   "description": "ioBroker adapter for Windhager myComfort cloud heating systems",
   "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/draftkraft/ioBroker.windhager-mycomfort.git"
+  },
+  "homepage": "https://github.com/draftkraft/ioBroker.windhager-mycomfort#readme",
+  "bugs": {
+    "url": "https://github.com/draftkraft/ioBroker.windhager-mycomfort/issues"
+  },
+  "files": [
+    "admin",
+    "main.js",
+    "io-package.json",
+    "README.md",
+    "windhager-mycomfort-iobroker.js"
+  ],
   "scripts": {
     "test": "node --check main.js && node --check windhager-mycomfort-iobroker.js"
   },
