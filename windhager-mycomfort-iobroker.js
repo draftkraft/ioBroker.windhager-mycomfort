@@ -95,6 +95,10 @@ const WRITABLE_OIDS = new Set([
   '3/58'
 ]);
 
+const SYNTHETIC_HEATING_CIRCUIT_OIDS = [
+  '3/50'
+];
+
 const ENUM_VALUES = {
   '3/50': {
     '0': 'Stand-by',
@@ -460,8 +464,29 @@ async function listObjects(profile) {
 
   return Array.from(objects.values()).map((object) => ({
     ...object,
-    properties: object.properties.sort((a, b) => a.oid.localeCompare(b.oid, undefined, { numeric: true }))
+    properties: addSyntheticProperties(object).sort((a, b) => a.oid.localeCompare(b.oid, undefined, { numeric: true }))
   }));
+}
+
+function addSyntheticProperties(object) {
+  const properties = [...object.properties];
+  if (!isHeatingCircuitObject(object)) return properties;
+
+  for (const oid of SYNTHETIC_HEATING_CIRCUIT_OIDS) {
+    if (!properties.some((property) => property.oid === oid)) {
+      properties.push({
+        oid,
+        name: OID_NAMES[oid] || oid,
+        synthetic: true
+      });
+    }
+  }
+  return properties;
+}
+
+function isHeatingCircuitObject(object) {
+  const oids = new Set(object.properties.map((property) => property.oid));
+  return oids.has('1/1') && oids.has('2/9');
 }
 
 async function readPropertyValue(profile, object, property) {

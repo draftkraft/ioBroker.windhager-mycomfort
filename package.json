@@ -1,6 +1,6 @@
 {
   "name": "iobroker.windhager-mycomfort",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ioBroker adapter for Windhager myComfort cloud heating systems",
   "main": "main.js",
   "repository": {
