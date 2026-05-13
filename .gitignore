@@ -1,0 +1,4 @@
+node_modules/
+windhager-token-cache.json
+windhager-ios-profile.json
+npm-debug.log*

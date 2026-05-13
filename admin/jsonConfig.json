@@ -1,0 +1,48 @@
+{
+  "type": "panel",
+  "items": {
+    "email": {
+      "type": "text",
+      "label": "myComfort email",
+      "newLine": true
+    },
+    "password": {
+      "type": "password",
+      "label": "myComfort password",
+      "newLine": true
+    },
+    "systemId": {
+      "type": "text",
+      "label": "System ID",
+      "help": "Required. Copy this from your Windhager myComfort API/system.",
+      "newLine": true
+    },
+    "deviceIdentifier": {
+      "type": "text",
+      "label": "Device identifier",
+      "help": "Required. Use a unique device identifier for the myComfort API client.",
+      "newLine": true
+    },
+    "refreshIntervalSec": {
+      "type": "number",
+      "label": "Refresh interval",
+      "help": "Seconds. Set to 0 to disable periodic refresh.",
+      "min": 0,
+      "newLine": true
+    },
+    "readConcurrency": {
+      "type": "number",
+      "label": "Read concurrency",
+      "min": 1,
+      "max": 10,
+      "newLine": true
+    },
+    "timeoutMs": {
+      "type": "number",
+      "label": "Request timeout",
+      "help": "Milliseconds.",
+      "min": 1000,
+      "newLine": true
+    }
+  }
+}

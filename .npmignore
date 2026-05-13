@@ -1,0 +1,5 @@
+node_modules/
+windhager-token-cache.json
+windhager-ios-profile.json
+windhager-mycomfort-adapter.zip
+npm-debug.log*
