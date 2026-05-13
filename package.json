@@ -1,0 +1,24 @@
+{
+  "name": "iobroker.windhager-mycomfort",
+  "version": "0.1.0",
+  "description": "ioBroker adapter for Windhager myComfort cloud heating systems",
+  "main": "main.js",
+  "scripts": {
+    "test": "node --check main.js && node --check windhager-mycomfort-iobroker.js"
+  },
+  "keywords": [
+    "ioBroker",
+    "windhager",
+    "mycomfort",
+    "heating"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@iobroker/adapter-core": "^3.3.2"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

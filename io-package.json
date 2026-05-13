@@ -1,0 +1,54 @@
+{
+  "common": {
+    "name": "windhager-mycomfort",
+    "version": "0.1.0",
+    "title": "Windhager myComfort",
+    "titleLang": {
+      "en": "Windhager myComfort",
+      "de": "Windhager myComfort"
+    },
+    "desc": {
+      "en": "Reads and controls Windhager myComfort cloud heating datapoints.",
+      "de": "Liest und steuert Windhager myComfort Cloud-Heizungsdatenpunkte."
+    },
+    "authors": [],
+    "keywords": [
+      "windhager",
+      "mycomfort",
+      "heating"
+    ],
+    "license": "MIT",
+    "platform": "Javascript/Node.js",
+    "mode": "daemon",
+    "icon": "windhager-mycomfort.png",
+    "enabled": true,
+    "extIcon": "https://raw.githubusercontent.com/ioBroker/ioBroker.js-controller/master/admin/img/no-image.png",
+    "readme": "https://github.com/haymomeran/ioBroker.windhager-mycomfort/blob/main/README.md",
+    "loglevel": "info",
+    "tier": 3,
+    "compact": true,
+    "connectionType": "cloud",
+    "dataSource": "poll",
+    "adminUI": {
+      "config": "json"
+    }
+  },
+  "native": {
+    "email": "",
+    "password": "",
+    "systemId": "299e1499-0873-459c-83e3-3467d9bd7b70",
+    "deviceIdentifier": "B1517623-CED4-4583-B2D4-305934B3CD50",
+    "refreshIntervalSec": 300,
+    "readConcurrency": 2,
+    "timeoutMs": 15000
+  },
+  "protectedNative": [
+    "email",
+    "password"
+  ],
+  "encryptedNative": [
+    "password"
+  ],
+  "objects": [],
+  "instanceObjects": []
+}
