@@ -37,7 +37,17 @@ windhager-mycomfort.0
          ├── room_temperature_current_value     r
          ├── flow_temperature_current_value     r
          ├── room_temperature_setpoint_heating  r/w
+         ├── heating_mode_temperature           r/w
+         ├── setback_mode_temperature           r/w
          ├── flow_temperature_setpoint          r
+         ├── programs
+         │   ├── program_1
+         │   │   ├── heating_start_time         r/w
+         │   │   ├── heating_target_temperature r/w
+         │   │   ├── setback_start_time         r/w
+         │   │   └── setback_target_temperature r/w
+         │   ├── program_2
+         │   └── program_3
          └── operating_mode                     r
 
 ```
@@ -45,3 +55,8 @@ windhager-mycomfort.0
 Device states are created dynamically from the Windhager datapoints returned by
 the cloud API. Technical IDs such as `nodeId`, `functionId`, and `oid` are stored
 in each state's `native` object.
+
+Heating circuits also expose editable Program 1-3 schedules. Each program is
+represented as two all-week switch points: heating and setback. Writing any of
+the four program states writes the complete normalized program schedule back to
+Windhager.

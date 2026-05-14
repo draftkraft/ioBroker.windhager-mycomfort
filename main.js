@@ -10,8 +10,10 @@ const {
   isUsableToken,
   listRawValues,
   normalizeProfile,
+  readProgramSchedule,
   request,
-  tokenExpiryMs
+  tokenExpiryMs,
+  writeProgramSchedule
 } = require('./windhager-mycomfort-iobroker');
 
 const INFO_STATES = {
@@ -42,6 +44,7 @@ class WindhagerMycomfort extends utils.Adapter {
     });
 
     this.datapoints = new Map();
+    this.programStates = new Map();
     this.refreshTimer = null;
     this.refreshRunning = false;
 
@@ -72,6 +75,18 @@ class WindhagerMycomfort extends utils.Adapter {
   async onStateChange(id, state) {
     if (!state || state.ack) return;
     const relId = this.relativeId(id);
+    const programMapping = this.programStates.get(relId);
+    if (programMapping) {
+      try {
+        await this.writeProgramState(relId, state.val);
+      } catch (error) {
+        await this.setStateAsync(INFO_STATES.online, false, true);
+        await this.setStateAsync(INFO_STATES.lastError, error.message, true);
+        this.log.error(`Windhager program write failed: ${error.message}`);
+      }
+      return;
+    }
+
     const mapping = this.datapoints.get(relId);
     if (!mapping || !mapping.writable) return;
 
@@ -209,6 +224,19 @@ class WindhagerMycomfort extends utils.Adapter {
           }
           await this.setStateAsync(stateId, this.normalizeStateValue(property.value), true);
         }
+
+        if (this.isHeatingCircuit(object)) {
+          for (const program of [1, 2, 3]) {
+            try {
+              const schedule = await readProgramSchedule(profile, object, program);
+              await this.setProgramScheduleStates(object, program, schedule);
+            } catch (error) {
+              errorCount += 1;
+              await this.clearProgramScheduleStates(object, program);
+              this.log.warn(`Windhager program ${program} read failed for ${object.name}: ${error.message}`);
+            }
+          }
+        }
       }
 
       await this.syncAuthStates(profile);
@@ -263,7 +291,62 @@ class WindhagerMycomfort extends utils.Adapter {
         });
         this.datapoints.set(stateId, { object, property, writable });
       }
+      if (this.isHeatingCircuit(object)) {
+        await this.ensureProgramStates(object);
+      }
     }
+  }
+
+  async ensureProgramStates(object) {
+    const programsId = `${this.stateIdForObject(object)}.programs`;
+    await this.setObjectNotExistsAsync(programsId, {
+      type: 'channel',
+      common: { name: 'Programs' },
+      native: {
+        deviceName: object.name,
+        nodeName: object.nodeName,
+        nodeId: object.nodeId,
+        functionId: object.functionId
+      }
+    });
+
+    for (const program of [1, 2, 3]) {
+      const programId = `${programsId}.program_${program}`;
+      await this.setObjectNotExistsAsync(programId, {
+        type: 'channel',
+        common: { name: `Program ${program}` },
+        native: {
+          deviceName: object.name,
+          nodeName: object.nodeName,
+          nodeId: object.nodeId,
+          functionId: object.functionId,
+          program
+        }
+      });
+      await this.ensureProgramState(object, program, 'heating_start_time', 'Heating start time', 'string', 'text');
+      await this.ensureProgramState(object, program, 'heating_target_temperature', 'Heating target temperature', 'number', 'level.temperature', '°C');
+      await this.ensureProgramState(object, program, 'setback_start_time', 'Setback start time', 'string', 'text');
+      await this.ensureProgramState(object, program, 'setback_target_temperature', 'Setback target temperature', 'number', 'level.temperature', '°C');
+    }
+  }
+
+  async ensureProgramState(object, program, field, name, type, role, unit) {
+    const stateId = this.programStateId(object, program, field);
+    const common = { name, type, role, read: true, write: true };
+    if (unit) common.unit = unit;
+    await this.setObjectNotExistsAsync(stateId, {
+      type: 'state',
+      common,
+      native: {
+        deviceName: object.name,
+        nodeName: object.nodeName,
+        nodeId: object.nodeId,
+        functionId: object.functionId,
+        program,
+        field
+      }
+    });
+    this.programStates.set(stateId, { object, program, field });
   }
 
   async writeDatapoint(stateId, value) {
@@ -282,6 +365,64 @@ class WindhagerMycomfort extends utils.Adapter {
     await this.setStateAsync(INFO_STATES.lastError, '', true);
   }
 
+  async writeProgramState(stateId, value) {
+    const mapping = this.programStates.get(stateId);
+    if (!mapping) return;
+
+    const schedule = await this.readProgramScheduleFromStates(mapping.object, mapping.program);
+    schedule[mapping.field] = value;
+    this.validateProgramSchedule(schedule);
+
+    const profile = await this.readProfile();
+    await writeProgramSchedule(profile, mapping.object, mapping.program, schedule);
+    await this.syncAuthStates(profile);
+    await this.setProgramScheduleStates(mapping.object, mapping.program, schedule);
+    await this.setStateAsync(INFO_STATES.online, true, true);
+    await this.setStateAsync(INFO_STATES.lastError, '', true);
+  }
+
+  async readProgramScheduleFromStates(object, program) {
+    const schedule = {};
+    for (const field of ['heating_start_time', 'heating_target_temperature', 'setback_start_time', 'setback_target_temperature']) {
+      const state = await this.getStateAsync(this.programStateId(object, program, field));
+      schedule[this.programScheduleKey(field)] = state?.val;
+    }
+    return schedule;
+  }
+
+  validateProgramSchedule(schedule) {
+    this.validateProgramTime(schedule.heatingStartTime);
+    this.validateProgramTime(schedule.setbackStartTime);
+    this.validateProgramTemperature(schedule.heatingTargetTemperature);
+    this.validateProgramTemperature(schedule.setbackTargetTemperature);
+  }
+
+  validateProgramTime(value) {
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || '').trim())) {
+      throw new Error(`Invalid program time "${value}", expected HH:mm`);
+    }
+  }
+
+  validateProgramTemperature(value) {
+    const temperature = Number(value);
+    if (!Number.isFinite(temperature)) {
+      throw new Error(`Invalid program temperature "${value}"`);
+    }
+  }
+
+  async setProgramScheduleStates(object, program, schedule) {
+    await this.setStateAsync(this.programStateId(object, program, 'heating_start_time'), schedule.heatingStartTime, true);
+    await this.setStateAsync(this.programStateId(object, program, 'heating_target_temperature'), this.normalizeStateValue(schedule.heatingTargetTemperature), true);
+    await this.setStateAsync(this.programStateId(object, program, 'setback_start_time'), schedule.setbackStartTime, true);
+    await this.setStateAsync(this.programStateId(object, program, 'setback_target_temperature'), this.normalizeStateValue(schedule.setbackTargetTemperature), true);
+  }
+
+  async clearProgramScheduleStates(object, program) {
+    for (const field of ['heating_start_time', 'heating_target_temperature', 'setback_start_time', 'setback_target_temperature']) {
+      await this.setStateAsync(this.programStateId(object, program, field), null, true);
+    }
+  }
+
   async scheduleRefresh() {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
@@ -296,7 +437,29 @@ class WindhagerMycomfort extends utils.Adapter {
   }
 
   stateIdFor(object, property) {
-    return `devices.${this.slugify(object.name)}.${this.slugify(property.name)}`;
+    return `${this.stateIdForObject(object)}.${this.slugify(property.name)}`;
+  }
+
+  stateIdForObject(object) {
+    return `devices.${this.slugify(object.name)}`;
+  }
+
+  programStateId(object, program, field) {
+    return `${this.stateIdForObject(object)}.programs.program_${program}.${field}`;
+  }
+
+  programScheduleKey(field) {
+    return {
+      heating_start_time: 'heatingStartTime',
+      heating_target_temperature: 'heatingTargetTemperature',
+      setback_start_time: 'setbackStartTime',
+      setback_target_temperature: 'setbackTargetTemperature'
+    }[field];
+  }
+
+  isHeatingCircuit(object) {
+    const oids = new Set(object.properties.map((property) => property.oid));
+    return oids.has('1/1') && oids.has('2/9');
   }
 
   stateRole(property, writable) {

@@ -88,15 +88,27 @@ const PROGRAM_VALUES = {
   Cooling: '8'
 };
 
+const PROGRAM_SCHEDULES = {
+  1: '3/61',
+  2: '3/62',
+  3: '3/63'
+};
+
+const PROGRAM_WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+
 const WRITABLE_OIDS = new Set([
   '1/1',
   '2/10',
+  '3/51',
+  '3/53',
   '3/50',
   '3/58'
 ]);
 
 const SYNTHETIC_HEATING_CIRCUIT_OIDS = [
-  '3/50'
+  '3/50',
+  '3/51',
+  '3/53'
 ];
 
 const ENUM_VALUES = {
@@ -157,6 +169,8 @@ const OID_NAMES = {
   '2/80': 'Number of burner starts',
   '2/81': 'Operating hours',
   '3/50': 'Heating program',
+  '3/51': 'Heating mode temperature',
+  '3/53': 'Setback mode temperature',
   '3/58': 'Temperature correction',
   '20/112': 'Number of starts',
   '23/87': 'Charge status',
@@ -434,6 +448,82 @@ function datapointPath(profile, object, oid, value) {
     params.set('value', String(value));
   }
   return `/api/v1/systems/${encodeURIComponent(profile.systemId)}/datapoint?${params.toString()}`;
+}
+
+function objectPath(profile, object, oid) {
+  const params = new URLSearchParams({
+    node_id: String(object.nodeId),
+    function_id: String(object.functionId),
+    oid
+  });
+  return `/api/v1/systems/${encodeURIComponent(profile.systemId)}/object?${params.toString()}`;
+}
+
+function programScheduleOid(program) {
+  const oid = PROGRAM_SCHEDULES[Number(program)];
+  if (!oid) throw new Error(`Unsupported heating program schedule "${program}"`);
+  return oid;
+}
+
+function validateTime(value) {
+  const time = String(value || '').trim();
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+    throw new Error(`Invalid program time "${value}", expected HH:mm`);
+  }
+  return time;
+}
+
+function validateTemperature(value) {
+  const temperature = Number(value);
+  if (!Number.isFinite(temperature)) {
+    throw new Error(`Invalid program temperature "${value}"`);
+  }
+  return temperature;
+}
+
+function programScheduleBody(object, program, schedule) {
+  const oid = programScheduleOid(program);
+  return {
+    OID: `/1/${object.nodeId}/${object.functionId}/${oid}/0`,
+    subtypeId: 14,
+    typeId: 30,
+    value: [
+      {
+        switchPoints: [
+          {
+            time: validateTime(schedule.heatingStartTime),
+            value: validateTemperature(schedule.heatingTargetTemperature)
+          },
+          {
+            time: validateTime(schedule.setbackStartTime),
+            value: validateTemperature(schedule.setbackTargetTemperature)
+          }
+        ],
+        weekdays: PROGRAM_WEEKDAYS
+      }
+    ]
+  };
+}
+
+function parseProgramSchedule(body) {
+  const switchPoints = Array.isArray(body?.value?.[0]?.switchPoints) ? body.value[0].switchPoints : [];
+  return {
+    heatingStartTime: switchPoints[0]?.time ?? null,
+    heatingTargetTemperature: switchPoints[0]?.value ?? null,
+    setbackStartTime: switchPoints[1]?.time ?? null,
+    setbackTargetTemperature: switchPoints[1]?.value ?? null
+  };
+}
+
+async function readProgramSchedule(profile, object, program) {
+  const body = await request(profile, 'GET', objectPath(profile, object, programScheduleOid(program)));
+  return parseProgramSchedule(body);
+}
+
+async function writeProgramSchedule(profile, object, program, schedule) {
+  return request(profile, 'PUT', objectPath(profile, object, programScheduleOid(program)), {
+    body: programScheduleBody(object, program, schedule)
+  });
 }
 
 async function getAvailableDatapoints(profile) {
@@ -885,7 +975,13 @@ module.exports = {
   listRawValues,
   listValues,
   normalizeProfile,
+  objectPath,
+  parseProgramSchedule,
+  programScheduleBody,
+  programScheduleOid,
   request,
+  readProgramSchedule,
+  writeProgramSchedule,
   setProgram,
   tokenExpiryMs
 };
