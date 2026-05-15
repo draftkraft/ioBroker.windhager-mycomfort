@@ -60,3 +60,9 @@ Heating circuits also expose editable Program 1-3 schedules. Each program is
 represented as two all-week switch points: heating and setback. Writing any of
 the four program states writes the complete normalized program schedule back to
 Windhager.
+
+Program schedules are refreshed on adapter startup and after program writes.
+Normal periodic refreshes only read live datapoints, so slow Windhager program
+reads do not clear existing program states. Windhager writes are serialized,
+retried for transient timeout/server-busy errors, and exposed through
+`info.writeQueueLength` and `info.lastWriteError`.

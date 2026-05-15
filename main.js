@@ -20,8 +20,13 @@ const INFO_STATES = {
   online: 'info.online',
   lastRefresh: 'info.lastRefresh',
   lastError: 'info.lastError',
-  apiBaseUrl: 'info.apiBaseUrl'
+  apiBaseUrl: 'info.apiBaseUrl',
+  lastProgramRefresh: 'info.lastProgramRefresh',
+  writeQueueLength: 'info.writeQueueLength',
+  lastWriteError: 'info.lastWriteError'
 };
+
+const RETRY_DELAYS_MS = [5000, 15000, 45000];
 
 const AUTH_STATES = {
   token: 'auth.token',
@@ -47,6 +52,8 @@ class WindhagerMycomfort extends utils.Adapter {
     this.programStates = new Map();
     this.refreshTimer = null;
     this.refreshRunning = false;
+    this.writeQueue = [];
+    this.writeQueueRunning = false;
 
     this.on('ready', this.onReady.bind(this));
     this.on('stateChange', this.onStateChange.bind(this));
@@ -57,6 +64,7 @@ class WindhagerMycomfort extends utils.Adapter {
     await this.ensureBaseStates();
     await this.subscribeStatesAsync('devices.*');
     await this.refreshValues();
+    await this.refreshProgramSchedules();
     await this.scheduleRefresh();
   }
 
@@ -77,26 +85,16 @@ class WindhagerMycomfort extends utils.Adapter {
     const relId = this.relativeId(id);
     const programMapping = this.programStates.get(relId);
     if (programMapping) {
-      try {
-        await this.writeProgramState(relId, state.val);
-      } catch (error) {
-        await this.setStateAsync(INFO_STATES.online, false, true);
-        await this.setStateAsync(INFO_STATES.lastError, error.message, true);
-        this.log.error(`Windhager program write failed: ${error.message}`);
-      }
+      this.enqueueWrite(`program ${relId}`, () => this.writeProgramState(relId, state.val))
+        .catch((error) => this.log.error(`Windhager program write failed: ${error.message}`));
       return;
     }
 
     const mapping = this.datapoints.get(relId);
     if (!mapping || !mapping.writable) return;
 
-    try {
-      await this.writeDatapoint(relId, state.val);
-    } catch (error) {
-      await this.setStateAsync(INFO_STATES.online, false, true);
-      await this.setStateAsync(INFO_STATES.lastError, error.message, true);
-      this.log.error(`Windhager write failed: ${error.message}`);
-    }
+    this.enqueueWrite(`datapoint ${relId}`, () => this.writeDatapoint(relId, state.val))
+      .catch((error) => this.log.error(`Windhager write failed: ${error.message}`));
   }
 
   async ensureBaseStates() {
@@ -138,6 +136,21 @@ class WindhagerMycomfort extends utils.Adapter {
     await this.setObjectNotExistsAsync(INFO_STATES.apiBaseUrl, {
       type: 'state',
       common: { name: 'Windhager API base URL', type: 'string', role: 'text', read: true, write: false },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(INFO_STATES.lastProgramRefresh, {
+      type: 'state',
+      common: { name: 'Windhager last program refresh', type: 'string', role: 'date', read: true, write: false },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(INFO_STATES.writeQueueLength, {
+      type: 'state',
+      common: { name: 'Windhager write queue length', type: 'number', role: 'value', read: true, write: false },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(INFO_STATES.lastWriteError, {
+      type: 'state',
+      common: { name: 'Windhager last write error', type: 'string', role: 'text', read: true, write: false },
       native: {}
     });
     await this.setObjectNotExistsAsync(AUTH_STATES.token, {
@@ -203,6 +216,10 @@ class WindhagerMycomfort extends utils.Adapter {
 
   async refreshValues() {
     if (this.refreshRunning) return;
+    if (this.writeQueueRunning) {
+      this.log.debug('Skipping Windhager refresh while write queue is active');
+      return;
+    }
     this.refreshRunning = true;
     try {
       const profile = await this.readProfile();
@@ -225,18 +242,6 @@ class WindhagerMycomfort extends utils.Adapter {
           await this.setStateAsync(stateId, this.normalizeStateValue(property.value), true);
         }
 
-        if (this.isHeatingCircuit(object)) {
-          for (const program of [1, 2, 3]) {
-            try {
-              const schedule = await readProgramSchedule(profile, object, program);
-              await this.setProgramScheduleStates(object, program, schedule);
-            } catch (error) {
-              errorCount += 1;
-              await this.clearProgramScheduleStates(object, program);
-              this.log.warn(`Windhager program ${program} read failed for ${object.name}: ${error.message}`);
-            }
-          }
-        }
       }
 
       await this.syncAuthStates(profile);
@@ -250,6 +255,33 @@ class WindhagerMycomfort extends utils.Adapter {
     } finally {
       this.refreshRunning = false;
     }
+  }
+
+  async refreshProgramSchedules(targetObject = null, targetProgram = null) {
+    const profile = await this.readProfile();
+    const objects = targetObject ? [targetObject] : Array.from(new Map(
+      Array.from(this.programStates.values()).map((mapping) => [`${mapping.object.nodeId}:${mapping.object.functionId}`, mapping.object])
+    ).values());
+    let errorCount = 0;
+
+    for (const object of objects) {
+      const programs = targetProgram ? [targetProgram] : [1, 2, 3];
+      for (const program of programs) {
+        try {
+          const schedule = await this.runWithRetry(`program ${program} read for ${object.name}`, () => readProgramSchedule(profile, object, program));
+          await this.setProgramScheduleStates(object, program, schedule);
+        } catch (error) {
+          errorCount += 1;
+          this.log.warn(`Windhager program ${program} read failed for ${object.name}: ${error.message}`);
+        }
+      }
+    }
+
+    await this.syncAuthStates(profile);
+    if (!errorCount) {
+      await this.setStateAsync(INFO_STATES.lastProgramRefresh, new Date().toISOString(), true);
+    }
+    return { errorCount };
   }
 
   async ensureDeviceValueStates(objects) {
@@ -362,7 +394,7 @@ class WindhagerMycomfort extends utils.Adapter {
     await this.syncAuthStates(profile);
     await this.setStateAsync(stateId, this.normalizeStateValue(writeValue), true);
     await this.setStateAsync(INFO_STATES.online, true, true);
-    await this.setStateAsync(INFO_STATES.lastError, '', true);
+    await this.setStateAsync(INFO_STATES.lastWriteError, '', true);
   }
 
   async writeProgramState(stateId, value) {
@@ -377,8 +409,72 @@ class WindhagerMycomfort extends utils.Adapter {
     await writeProgramSchedule(profile, mapping.object, mapping.program, schedule);
     await this.syncAuthStates(profile);
     await this.setProgramScheduleStates(mapping.object, mapping.program, schedule);
+    await this.refreshProgramSchedules(mapping.object, mapping.program);
     await this.setStateAsync(INFO_STATES.online, true, true);
-    await this.setStateAsync(INFO_STATES.lastError, '', true);
+    await this.setStateAsync(INFO_STATES.lastWriteError, '', true);
+  }
+
+  enqueueWrite(label, task) {
+    return new Promise((resolve, reject) => {
+      this.writeQueue.push({ label, task, resolve, reject });
+      this.updateWriteQueueLength().catch((error) => this.log.warn(`Could not update write queue length: ${error.message}`));
+      this.processWriteQueue().catch((error) => this.log.error(`Windhager write queue failed: ${error.message}`));
+    });
+  }
+
+  async processWriteQueue() {
+    if (this.writeQueueRunning) return;
+    this.writeQueueRunning = true;
+    try {
+      while (this.writeQueue.length) {
+        const item = this.writeQueue.shift();
+        await this.updateWriteQueueLength();
+        try {
+          const result = await this.runWithRetry(item.label, item.task);
+          await this.setStateAsync(INFO_STATES.lastWriteError, '', true);
+          item.resolve(result);
+        } catch (error) {
+          await this.setStateAsync(INFO_STATES.lastWriteError, error.message, true);
+          item.reject(error);
+        }
+      }
+    } finally {
+      this.writeQueueRunning = false;
+      await this.updateWriteQueueLength();
+    }
+  }
+
+  async updateWriteQueueLength() {
+    await this.setStateAsync(INFO_STATES.writeQueueLength, this.writeQueue.length + (this.writeQueueRunning ? 1 : 0), true);
+  }
+
+  async runWithRetry(label, task) {
+    let lastError;
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        return await task();
+      } catch (error) {
+        lastError = error;
+        if (!this.isTransientWindhagerError(error) || attempt >= RETRY_DELAYS_MS.length) {
+          throw error;
+        }
+        const delayMs = RETRY_DELAYS_MS[attempt];
+        this.log.warn(`Windhager ${label} failed transiently (${error.message}); retrying in ${Math.round(delayMs / 1000)}s`);
+        await this.sleep(delayMs);
+      }
+    }
+    throw lastError;
+  }
+
+  isTransientWindhagerError(error) {
+    const message = String(error?.message || '');
+    return message.includes('Request timed out') ||
+      message.includes('Server busy') ||
+      /\b50[234]\b/.test(message);
+  }
+
+  sleep(delayMs) {
+    return new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
   async readProgramScheduleFromStates(object, program) {
