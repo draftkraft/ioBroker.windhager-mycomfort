@@ -7,12 +7,16 @@ const {
   PROGRAM_VALUES,
   WRITABLE_OIDS,
   datapointPath,
+  isTransientRequestError,
   isUsableToken,
   listRawValues,
   normalizeProfile,
+  programSchedulesEquivalent,
+  readPropertyValue,
   readProgramSchedule,
   request,
   tokenExpiryMs,
+  valuesEquivalent,
   writeProgramSchedule
 } = require('./windhager-mycomfort-iobroker');
 
@@ -23,7 +27,9 @@ const INFO_STATES = {
   apiBaseUrl: 'info.apiBaseUrl',
   lastProgramRefresh: 'info.lastProgramRefresh',
   writeQueueLength: 'info.writeQueueLength',
-  lastWriteError: 'info.lastWriteError'
+  lastWriteError: 'info.lastWriteError',
+  writeAlert: 'info.writeAlert',
+  lastFailedWriteAt: 'info.lastFailedWriteAt'
 };
 
 const RETRY_DELAYS_MS = [5000, 15000, 45000];
@@ -153,6 +159,18 @@ class WindhagerMycomfort extends utils.Adapter {
       common: { name: 'Windhager last write error', type: 'string', role: 'text', read: true, write: false },
       native: {}
     });
+    await this.setObjectNotExistsAsync(INFO_STATES.writeAlert, {
+      type: 'state',
+      common: { name: 'Windhager write failure alert', type: 'boolean', role: 'indicator.maintenance', read: true, write: false },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(INFO_STATES.lastFailedWriteAt, {
+      type: 'state',
+      common: { name: 'Windhager last failed write time', type: 'string', role: 'date', read: true, write: false },
+      native: {}
+    });
+    const writeAlert = await this.getStateAsync(INFO_STATES.writeAlert);
+    if (!writeAlert) await this.setStateAsync(INFO_STATES.writeAlert, false, true);
     await this.setObjectNotExistsAsync(AUTH_STATES.token, {
       type: 'state',
       common: { name: 'Windhager auth token', type: 'string', role: 'text', read: true, write: true },
@@ -387,14 +405,37 @@ class WindhagerMycomfort extends utils.Adapter {
 
     const profile = await this.readProfile();
     const writeValue = this.writeValueForOid(mapping.property.oid, value);
+
+    // A previous PUT may have landed even if its response was lost. Checking
+    // first makes retries safe and avoids sending the same command again.
+    const before = await readPropertyValue(profile, mapping.object, mapping.property);
+    const needsOverrideClear = mapping.property.oid === '3/50';
+    const tolerance = mapping.property.unit === '°C' ? 0.1 : 0;
+    if (!needsOverrideClear && valuesEquivalent(before.value, writeValue, tolerance)) {
+      await this.finishSuccessfulWrite(profile, stateId, before.value);
+      return;
+    }
+
     await request(profile, 'PUT', datapointPath(profile, mapping.object, mapping.property.oid, writeValue));
-    if (mapping.property.oid === '3/50') {
+    if (needsOverrideClear) {
       await request(profile, 'PUT', datapointPath(profile, mapping.object, '2/10', '0'));
     }
+
+    const confirmed = await readPropertyValue(profile, mapping.object, mapping.property);
+    if (!valuesEquivalent(confirmed.value, writeValue, tolerance)) {
+      const error = new Error(`Windhager did not confirm ${mapping.property.name}: requested ${writeValue}, read back ${confirmed.value}`);
+      error.retryable = true;
+      throw error;
+    }
+    await this.finishSuccessfulWrite(profile, stateId, confirmed.value);
+  }
+
+  async finishSuccessfulWrite(profile, stateId, confirmedValue) {
     await this.syncAuthStates(profile);
-    await this.setStateAsync(stateId, this.normalizeStateValue(writeValue), true);
+    await this.setStateAsync(stateId, this.normalizeStateValue(confirmedValue), true);
     await this.setStateAsync(INFO_STATES.online, true, true);
     await this.setStateAsync(INFO_STATES.lastWriteError, '', true);
+    await this.setStateAsync(INFO_STATES.writeAlert, false, true);
   }
 
   async writeProgramState(stateId, value) {
@@ -406,12 +447,28 @@ class WindhagerMycomfort extends utils.Adapter {
     this.validateProgramSchedule(schedule);
 
     const profile = await this.readProfile();
+    const before = await readProgramSchedule(profile, mapping.object, mapping.program);
+    if (programSchedulesEquivalent(before, schedule)) {
+      await this.finishSuccessfulProgramWrite(profile, mapping, before);
+      return;
+    }
+
     await writeProgramSchedule(profile, mapping.object, mapping.program, schedule);
+    const confirmed = await readProgramSchedule(profile, mapping.object, mapping.program);
+    if (!programSchedulesEquivalent(confirmed, schedule)) {
+      const error = new Error(`Windhager did not confirm program ${mapping.program} schedule for ${mapping.object.name}`);
+      error.retryable = true;
+      throw error;
+    }
+    await this.finishSuccessfulProgramWrite(profile, mapping, confirmed);
+  }
+
+  async finishSuccessfulProgramWrite(profile, mapping, confirmed) {
     await this.syncAuthStates(profile);
-    await this.setProgramScheduleStates(mapping.object, mapping.program, schedule);
-    await this.refreshProgramSchedules(mapping.object, mapping.program);
+    await this.setProgramScheduleStates(mapping.object, mapping.program, confirmed);
     await this.setStateAsync(INFO_STATES.online, true, true);
     await this.setStateAsync(INFO_STATES.lastWriteError, '', true);
+    await this.setStateAsync(INFO_STATES.writeAlert, false, true);
   }
 
   enqueueWrite(label, task) {
@@ -435,6 +492,9 @@ class WindhagerMycomfort extends utils.Adapter {
           item.resolve(result);
         } catch (error) {
           await this.setStateAsync(INFO_STATES.lastWriteError, error.message, true);
+          await this.setStateAsync(INFO_STATES.lastFailedWriteAt, new Date().toISOString(), true);
+          await this.setStateAsync(INFO_STATES.writeAlert, true, true);
+          this.log.error(`ALERT: Windhager ${item.label} failed permanently after retries: ${error.message}`);
           item.reject(error);
         }
       }
@@ -467,10 +527,7 @@ class WindhagerMycomfort extends utils.Adapter {
   }
 
   isTransientWindhagerError(error) {
-    const message = String(error?.message || '');
-    return message.includes('Request timed out') ||
-      message.includes('Server busy') ||
-      /\b50[234]\b/.test(message);
+    return isTransientRequestError(error);
   }
 
   sleep(delayMs) {

@@ -310,7 +310,38 @@ function rawRequest(profile, method, path, options = {}) {
 }
 
 function isUnauthorized(error) {
-  return error && error.statusCode === 401;
+  return error && (error.statusCode === 401 || error.statusCode === 403);
+}
+
+function isTransientRequestError(error) {
+  const statusCode = Number(error?.statusCode || 0);
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+  return error?.retryable === true ||
+    [408, 425, 429, 500, 502, 503, 504].includes(statusCode) ||
+    ['ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT'].includes(code) ||
+    message.includes('Request timed out') ||
+    message.includes('Server busy') ||
+    message.includes('socket hang up');
+}
+
+function valuesEquivalent(actual, expected, tolerance = 0.1) {
+  if (actual === null || actual === undefined || expected === null || expected === undefined) {
+    return actual === expected;
+  }
+  const actualNumber = Number(actual);
+  const expectedNumber = Number(expected);
+  if (actual !== '' && expected !== '' && Number.isFinite(actualNumber) && Number.isFinite(expectedNumber)) {
+    return Math.abs(actualNumber - expectedNumber) <= tolerance;
+  }
+  return String(actual) === String(expected);
+}
+
+function programSchedulesEquivalent(actual, expected) {
+  return String(actual?.heatingStartTime) === String(expected?.heatingStartTime) &&
+    valuesEquivalent(actual?.heatingTargetTemperature, expected?.heatingTargetTemperature) &&
+    String(actual?.setbackStartTime) === String(expected?.setbackStartTime) &&
+    valuesEquivalent(actual?.setbackTargetTemperature, expected?.setbackTargetTemperature);
 }
 
 async function getAuthToken(profile, options = {}) {
@@ -971,6 +1002,7 @@ module.exports = {
   datapointPath,
   doctor,
   isUsableToken,
+  isTransientRequestError,
   listObjects,
   listRawValues,
   listValues,
@@ -980,8 +1012,11 @@ module.exports = {
   programScheduleBody,
   programScheduleOid,
   request,
+  readPropertyValue,
   readProgramSchedule,
   writeProgramSchedule,
   setProgram,
-  tokenExpiryMs
+  tokenExpiryMs,
+  valuesEquivalent,
+  programSchedulesEquivalent
 };

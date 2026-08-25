@@ -66,3 +66,15 @@ Normal periodic refreshes only read live datapoints, so slow Windhager program
 reads do not clear existing program states. Windhager writes are serialized,
 retried for transient timeout/server-busy errors, and exposed through
 `info.writeQueueLength` and `info.lastWriteError`.
+
+Every datapoint write is read back from Windhager and is only acknowledged in
+ioBroker after the requested value is confirmed. Before retrying a failed PUT,
+the adapter reads the value first so a command whose response was lost is not
+needlessly repeated. Transient network and HTTP failures are retried after 5,
+15, and 45 seconds.
+
+If all attempts fail, `info.writeAlert` changes to `true`,
+`info.lastWriteError` contains the reason, and `info.lastFailedWriteAt` records
+the failure time. Use the rising edge of `info.writeAlert` as the trigger for an
+ioBroker notification, email, or messaging automation. A later confirmed write
+clears the alert.
